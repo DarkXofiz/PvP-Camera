@@ -236,7 +236,7 @@ public final class VideoRecorder {
                     out.write(tmp, 0, size);
                 });
                 try {
-                    if (!STBImageWrite.stbi_write_jpg_to_func(cb, 0L, w, h, 3, buf, JPEG_QUALITY)) {
+                    if (STBImageWrite.stbi_write_jpg_to_func(cb, 0L, w, h, 3, buf, JPEG_QUALITY) == 0) {
                         throw new IOException("JPEG encoding failed");
                     }
                 } finally {
