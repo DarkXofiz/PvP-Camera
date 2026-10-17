@@ -47,7 +47,7 @@ public class RecordingsScreen extends Screen {
                     btn.setMessage(qualityLabel());
                 }).dimensions(rowX, 30, 140, 20)
                 .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
-                        Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya. FPS+ açıkken en fazla 480p kaydedilir.")))
+                        Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya. FPS+ açıkken en fazla 720p kaydedilir.")))
                 .build());
         addDrawableChild(ButtonWidget.builder(fpsLabel(), btn -> {
                     Quality.setFps(Quality.fps() == 60 ? 30 : 60);
@@ -61,7 +61,7 @@ public class RecordingsScreen extends Screen {
                     btn.setMessage(boostLabel());
                 }).dimensions(rowX + 208, 30, 90, 20)
                 .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
-                        Text.literal("FPS+: kayıt sırasında oyun FPS'ini korur. Daha hafif kayıt (en fazla 480p, 30 FPS), az işlemci çekirdeği, oyun yavaşlarsa kayıt otomatik hafifler.")))
+                        Text.literal("FPS+: kayıt sırasında oyun FPS'ini korur. Daha hafif kayıt (en fazla 720p, 30 FPS), az işlemci çekirdeği, oyun yavaşlarsa kayıt otomatik hafifler.")))
                 .build());
 
         updateButtons();

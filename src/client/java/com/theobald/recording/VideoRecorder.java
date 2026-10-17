@@ -96,9 +96,9 @@ public final class VideoRecorder {
         }
         if (!Quality.boost() || baselineFps < 25) return;
         double ratio = f / baselineFps;
-        if (ratio < 0.9) {
+        if (ratio < 0.8) {
             goodStreak = 0;
-            if (++badStreak >= 1 && level < MAX_LEVEL) {
+            if (++badStreak >= 2 && level < MAX_LEVEL) {
                 badStreak = 0;
                 // throttled again right after relaxing: wait longer before the next relax attempt
                 if (lastRecover != 0 && now - lastRecover < 8 * SECOND) recoverAfter = Math.min(recoverAfter * 2, 120);
@@ -172,15 +172,16 @@ public final class VideoRecorder {
         boolean boost = Quality.boost();
         fps = boost ? Math.min(Quality.fps(), 30) : Quality.fps();
         frameNanos = 1_000_000_000L / fps;
-        // FPS+ keeps the recording light: max 480p wide and 30 fps (phones/tablets cannot read back big frames fast)
-        int maxW = boost ? Math.min(q.width, 854) : q.width;
+        // FPS+ keeps the recording light: max 720p wide and 30 fps
+        int maxW = boost ? Math.min(q.width, 1280) : q.width;
         int tw = Math.max(2, Math.min(w, maxW) & ~1);
         int th = Math.max(2, (int) Math.round(h * (double) tw / w) & ~1);
 
         try {
             String name = "PvP_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
             Path finalFile = Recordings.directory().resolve(name + ".avi");
-            worker = new Worker(finalFile, tw, th, q.jpeg(fps), fps, frameNanos);
+            int jq = boost ? Math.min(85, q.jpeg(fps) + 12) : q.jpeg(fps); // fewer frames are encoded, so spend a bit more on quality
+            worker = new Worker(finalFile, tw, th, jq, fps, frameNanos);
             worker.start();
         } catch (Throwable e) {
             LOGGER.error("Could not start recording", e);
@@ -276,8 +277,8 @@ public final class VideoRecorder {
         private final ExecutorService encoders;
         private volatile boolean finishing = false;
         private final AtomicInteger busy = new AtomicInteger();
-        private boolean slowChecked = false;
-        private int checkedFrames = 0;
+        private long grabCost = 0;
+        private int costSamples = 0;
         private final int maxBusy;
         private final STBIWriteCallback jpegCb = STBIWriteCallback.create((ctx, data, size) -> SINK.get().write(data, size));
 
@@ -314,13 +315,18 @@ public final class VideoRecorder {
         void capture(long now) {
             // encoders are behind: do not even touch the GPU for this frame (the writer repeats the last picture)
             if (busy.get() >= maxBusy) return;
+            final long t0 = System.nanoTime();
             final FrameGrabber.Grabbed g = grabber.grab(now);
-            if (!slowChecked && Quality.boost()) {
-                int sl = grabber.slowness();
-                if (sl > 0 || ++checkedFrames >= 10) slowChecked = true;
-                if (sl > 0) {
-                    // read-back stalls the GPU (typical on mobile GL wrappers): capture far less often
-                    floorInterval = sl == 2 ? SECOND / 12 : SECOND / 20;
+            if (g != null && Quality.boost()) {
+                // measure what a capture really costs the render thread and keep it near 12% of the time:
+                // fast devices record at full rate, devices that stall on read-back get the best rate they can afford
+                long d = System.nanoTime() - t0;
+                grabCost = grabCost == 0 ? d : (long) (grabCost * 0.85 + d * 0.15);
+                if (++costSamples >= 5) {
+                    floorInterval = Math.max(0L, Math.min(SECOND / 8, grabCost * 8));
+                    updateInterval();
+                } else if (grabber.slowness() > 0) {
+                    floorInterval = grabber.slowness() == 2 ? SECOND / 12 : SECOND / 20; // until we have real numbers
                     updateInterval();
                 }
             }
