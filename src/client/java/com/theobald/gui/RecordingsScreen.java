@@ -61,7 +61,7 @@ public class RecordingsScreen extends Screen {
                 Path target = Recordings.exportToGallery(source);
                 String folder = target.getParent() != null && target.getParent().getFileName() != null
                         ? target.getParent().getFileName().toString() : "";
-                status = Text.literal("Galeriye kaydedildi (" + folder + ")");
+                status = Text.literal("Kaydedildi: " + target);
             } catch (IOException e) {
                 status = Text.literal("İndirme başarısız: " + e.getMessage());
             } finally {

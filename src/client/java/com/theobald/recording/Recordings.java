@@ -78,8 +78,8 @@ public final class Recordings {
         List<Path> dirs = new ArrayList<>();
         if (isAndroid()) {
             Path root = Paths.get("/storage/emulated/0");
-            dirs.add(root.resolve("Movies").resolve("PvPCamera"));
             dirs.add(root.resolve("DCIM").resolve("PvPCamera"));
+            dirs.add(root.resolve("Movies").resolve("PvPCamera"));
             dirs.add(root.resolve("Download").resolve("PvPCamera"));
         } else {
             Path home = Paths.get(System.getProperty("user.home", "."));
