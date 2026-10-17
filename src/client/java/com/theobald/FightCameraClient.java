@@ -17,6 +17,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.GameMenuScreen;
 import net.minecraft.client.gui.tooltip.Tooltip;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.util.InputUtil;
@@ -43,6 +44,14 @@ public class FightCameraClient implements ClientModInitializer {
 	public static boolean active = false;
 	public static boolean trackPearls = false;
 	public static boolean drawLines = false;
+	/** true = camera follows YOU and the nearest opponent (your own fights) */
+	public static boolean autoSelf = true;
+	/** true while the camera is currently in "own fight" mode */
+	public static boolean selfMode = false;
+	private static boolean wasActive = false;
+	private static PlayerEntity lastOpponent = null;
+	private static final double ENGAGE_RANGE = 12.0;
+	private static final double RELEASE_RANGE = 20.0;
 	public static AnchorMode anchor = AnchorMode.AVERAGE;
 	public static HeightMode heightMode = HeightMode.AVERAGE;
 	public static DistanceMode distanceMode = DistanceMode.AUTO	;
@@ -117,8 +126,6 @@ public class FightCameraClient implements ClientModInitializer {
 		});
 		WorldRenderEvents.START.register(context -> onRender(context.tickDelta()));
 
-		// Grab video frames once the world has been drawn
-		WorldRenderEvents.END.register(context -> VideoRecorder.onWorldRendered());
 		HudRenderCallback.EVENT.register(RecordingHud::render);
 
 		// Small square button on the right of the pause menu -> opens the recordings list
@@ -146,11 +153,19 @@ public class FightCameraClient implements ClientModInitializer {
 				active = false;
 			}
 
+			if (active && !wasActive) {
+				initTargets();
+			}
+			wasActive = active;
+
 			if (active) {
+				Window window = client.getWindow();
+				aspectRatio = (float) window.getFramebufferWidth() / window.getFramebufferHeight();
 				updateTarget(CalculateCameraPos());
 				updateYawTarget(CalculateCameraYaw());
 				updateGroundHeights();
 
+				if (!selfMode) {
 				if (client.options.jumpKey.isPressed()) {
 					height += client.options.sprintKey.isPressed() ? .2f : .1f;
 					client.player.sendMessage(Text.literal("Height: " + df.format(height)), true);
@@ -181,11 +196,13 @@ public class FightCameraClient implements ClientModInitializer {
 						client.player.sendMessage(Text.literal("Offset: " + df.format(xoffset)), true);
 					}
 				}
+				}
 			}
 		}
 	}
 
 	private void onRender(float tickDelta) {
+		if (selfMode) return; // in own-fight mode the camera is placed by CameraMixin
 		Camera camera = client.gameRenderer.getCamera();
 		if (camera != null && active) {
 			//frame interpolation
@@ -281,12 +298,11 @@ public class FightCameraClient implements ClientModInitializer {
 		if (toggled) {
 			if (client.player != null && updatePlayers()) {
 				sendMessage("PvP Camera enabled!");
-
-				currentTargetPos = Util.Average(players[0].getPos(), players[1].getPos());
-				currentTargetYaw = CalculateCameraYaw();
-				Window window = client.getWindow();
-				aspectRatio = (float) window.getFramebufferWidth() / window.getFramebufferHeight();
-				updateGroundHeights();
+				initTargets();
+			}
+			else if (autoSelf) {
+				active = false;
+				sendMessage("PvP Camera enabled! Rakip yaklaşınca kamera otomatik açılır.");
 			}
 			else {
 				active = false;
@@ -298,6 +314,39 @@ public class FightCameraClient implements ClientModInitializer {
 			client.player.sendMessage(Text.literal("PvP Camera disabled!"), true);
 		}
 
+	}
+
+	/** Switch to "own fight" mode: camera follows you and the nearest opponent. */
+	public static void enableSelfMode() {
+		autoSelf = true;
+		lastOpponent = null;
+		sendMessage("PvP Camera: kendi dövüş modu (en yakın rakibi otomatik izler)");
+		if (!toggled) toggle();
+	}
+
+	private static void initTargets() {
+		if (players == null || players[0] == null || players[1] == null) return;
+		Vec3d start = Util.Average(players[0].getPos(), players[1].getPos());
+		Vec3d dir = players[0].getPos().subtract(players[1].getPos()).normalize();
+		float yaw = (float) Math.toDegrees(Math.atan2(dir.z, dir.x));
+		currentTargetPos = start;
+		lastTargetPos = start;
+		currentTargetYaw = yaw;
+		lastTargetYaw = yaw;
+		Window window = client.getWindow();
+		aspectRatio = (float) window.getFramebufferWidth() / window.getFramebufferHeight();
+		updateGroundHeights();
+	}
+
+	/** Pitch that makes the camera look at the middle of the two fighters. */
+	public static float computePitch(Vec3d camPos) {
+		if (players == null || players[0] == null || players[1] == null) return 15f;
+		Vec3d look = Util.Average(players[0].getPos(), players[1].getPos()).add(0, 1.0, 0);
+		double dx = camPos.x - look.x;
+		double dz = camPos.z - look.z;
+		double horizontal = Math.max(Math.sqrt(dx * dx + dz * dz), 0.1);
+		float pitch = (float) Math.toDegrees(Math.atan2(camPos.y - look.y, horizontal));
+		return Util.clamp(pitch, -30f, 60f);
 	}
 
 	public static boolean getActive() {
@@ -408,11 +457,17 @@ public class FightCameraClient implements ClientModInitializer {
 
 	public static boolean updatePlayers()
 	{
+		MinecraftClient mc = MinecraftClient.getInstance();
+		if (mc.world == null || mc.player == null) return false;
+
+		if (autoSelf) return updateSelfPlayers(mc);
+		selfMode = false;
+
 		if (!checkPlayers()) return false;
 
-		PlayerEntity p1 = MinecraftClient.getInstance().world.getPlayers()
+		PlayerEntity p1 = mc.world.getPlayers()
 				.stream().filter(p -> p.getName().getString().equals(playerStrings[0])).findFirst().orElse(null);
-		PlayerEntity p2 = MinecraftClient.getInstance().world.getPlayers()
+		PlayerEntity p2 = mc.world.getPlayers()
 				.stream().filter(p -> p.getName().getString().equals(playerStrings[1])).findFirst().orElse(null);
 
 		if (p1 == null || p2 == null) {
@@ -422,6 +477,42 @@ public class FightCameraClient implements ClientModInitializer {
 		}
 
 		FightCameraClient.setPlayers(new PlayerEntity[]{p1, p2});
+		return true;
+	}
+
+	/** Own-fight mode: you + the nearest opponent. Camera switches off when nobody is close. */
+	private static boolean updateSelfPlayers(MinecraftClient mc) {
+		ClientPlayerEntity me = mc.player;
+		PlayerEntity opp = lastOpponent;
+
+		if (opp != null && (opp.isRemoved() || !opp.isAlive() || opp.isSpectator()
+				|| opp.squaredDistanceTo(me) > RELEASE_RANGE * RELEASE_RANGE)) {
+			opp = null;
+		}
+
+		if (opp == null) {
+			double best = ENGAGE_RANGE * ENGAGE_RANGE;
+			for (PlayerEntity p : mc.world.getPlayers()) {
+				if (p == me || p.isSpectator() || !p.isAlive()) continue;
+				double d = p.squaredDistanceTo(me);
+				if (d < best) {
+					best = d;
+					opp = p;
+				}
+			}
+		}
+
+		if (opp != lastOpponent) {
+			lastOpponent = opp;
+			if (opp != null) {
+				me.sendMessage(Text.literal("PvP Camera: " + opp.getName().getString()), true);
+			}
+		}
+
+		if (opp == null) return false;
+
+		selfMode = true;
+		FightCameraClient.setPlayers(new PlayerEntity[]{me, opp});
 		return true;
 	}
 

@@ -12,6 +12,12 @@
   Select one and press **İndir** (bottom right) to copy it into the gallery (`Movies/PvPCamera` on Android, `Videos/PvP Camera` on PC).
 * Recordings are saved as `.avi` (MJPEG, max 854px wide, 15 fps) in `.minecraft/pvp-camera/recordings`.
 
+# Own-fight mode (default)
+
+Press `;` (or `/fightcam self`) and the camera automatically follows **you and the nearest player** (within 12 blocks)
+from the side, with smooth animation. It switches back to your normal view when nobody is close.
+Your own mouse look / movement stay under your control. Use `/fightcam players <p1> <p2>` to watch two specific players instead.
+
 # Usage:
 (`/pvpcam` works as a shorter alias of `/fightcam`)
 

@@ -14,7 +14,7 @@ public abstract class LivingEntityRendererMixin<T extends LivingEntity> {
 
     @Inject(method = "hasLabel", at = @At("HEAD"), cancellable = true)
     private void forceRenderNametag(T entity, CallbackInfoReturnable<Boolean> cir) {
-        if (entity instanceof ClientPlayerEntity && FightCameraClient.active) {
+        if (entity instanceof ClientPlayerEntity && FightCameraClient.active && !FightCameraClient.selfMode) {
             cir.setReturnValue(true); // Always show the name tag for the local player
         }
     }

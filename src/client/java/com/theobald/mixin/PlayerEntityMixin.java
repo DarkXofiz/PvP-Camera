@@ -13,7 +13,7 @@ public abstract class PlayerEntityMixin {
 
     @Inject(method = "tickMovement", at = @At("HEAD"), cancellable = true)
     private void disableMovement(CallbackInfo ci) {
-        if (FightCameraClient.active && (Object) this == MinecraftClient.getInstance().player) {
+        if (FightCameraClient.active && !FightCameraClient.selfMode && (Object) this == MinecraftClient.getInstance().player) {
             ci.cancel();
         }
     }

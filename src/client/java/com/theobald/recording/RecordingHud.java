@@ -22,6 +22,7 @@ public final class RecordingHud {
     public static void render(DrawContext ctx, float tickDelta) {
         MinecraftClient mc = MinecraftClient.getInstance();
         TextRenderer tr = mc.textRenderer;
+        if (VideoRecorder.isCapturingFrame()) return;
 
         if (VideoRecorder.isRecording()) {
             int s = VideoRecorder.elapsedSeconds();

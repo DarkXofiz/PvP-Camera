@@ -89,12 +89,18 @@ public class FightCamCommand {
                                                     String name1 = StringArgumentType.getString(context, "player1");
                                                     String name2 = StringArgumentType.getString(context, "player2");
 
+                                                    FightCameraClient.autoSelf = false;
                                                     FightCameraClient.playerStrings = new String[] {name1, name2};
                                                     FightCameraClient.updatePlayers();
 
                                                     sendMessage("PvP Camera set to " + name1 + " and " + name2);
                                                     return 1;
                                                 }))))
+                        .then(ClientCommandManager.literal("self")
+                                .executes(context -> {
+                                    FightCameraClient.enableSelfMode();
+                                    return 1;
+                                }))
                         .then(ClientCommandManager.literal("toggle")
                                 .executes(context -> {
                                     FightCameraClient.toggle();

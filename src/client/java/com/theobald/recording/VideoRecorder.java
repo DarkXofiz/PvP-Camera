@@ -45,6 +45,25 @@ public final class VideoRecorder {
 
     private VideoRecorder() {}
 
+    private static volatile boolean capturing = false;
+
+    public static boolean isCapturingFrame() {
+        return capturing;
+    }
+
+    /** Start of a rendered frame: decide whether this frame will be captured. */
+    public static void beginFrame() {
+        capturing = recording && System.nanoTime() - lastCaptureNanos >= FRAME_NANOS;
+    }
+
+    /** End of a rendered frame: the framebuffer now holds the finished picture. */
+    public static void endFrame() {
+        if (capturing) {
+            capturing = false;
+            onWorldRendered();
+        }
+    }
+
     public static boolean isRecording() {
         return recording;
     }
