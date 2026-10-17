@@ -11,23 +11,30 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-/** Video quality presets (output width; height follows the screen's aspect ratio). */
+/** Video quality presets (output width; height follows the screen's aspect ratio) + frame rate setting. */
 public enum Quality {
     HD("HD 720p", 1280, 70),
     FHD("Full HD 1080p", 1920, 65),
     QHD("2K 1440p", 2560, 65);
 
     private static final Logger LOGGER = LoggerFactory.getLogger("PvP Camera");
-    private static Quality current;
+    private static Quality current = FHD;
+    private static int fps = 60;
+    private static boolean loaded = false;
 
     public final String label;
     public final int width;
-    public final int jpegQuality;
+    private final int jpegQuality;
 
     Quality(String label, int width, int jpegQuality) {
         this.label = label;
         this.width = width;
         this.jpegQuality = jpegQuality;
+    }
+
+    /** At 60 fps the JPEG quality is lowered a little so files do not become huge. */
+    public int jpeg(int fps) {
+        return fps > 30 ? jpegQuality - 8 : jpegQuality;
     }
 
     public Quality next() {
@@ -39,34 +46,54 @@ public enum Quality {
         return FabricLoader.getInstance().getGameDir().resolve("pvp-camera").resolve("config.properties");
     }
 
-    public static synchronized Quality current() {
-        if (current == null) {
-            current = FHD;
-            Path f = file();
-            if (Files.isRegularFile(f)) {
-                try (InputStream in = Files.newInputStream(f)) {
-                    Properties p = new Properties();
-                    p.load(in);
-                    current = valueOf(p.getProperty("quality", FHD.name()));
-                } catch (Exception e) {
-                    LOGGER.warn("Could not read quality setting", e);
-                }
-            }
+    private static synchronized void load() {
+        if (loaded) return;
+        loaded = true;
+        Path f = file();
+        if (!Files.isRegularFile(f)) return;
+        try (InputStream in = Files.newInputStream(f)) {
+            Properties p = new Properties();
+            p.load(in);
+            try { current = valueOf(p.getProperty("quality", FHD.name())); } catch (Exception ignored) { }
+            fps = "30".equals(p.getProperty("fps")) ? 30 : 60;
+        } catch (Exception e) {
+            LOGGER.warn("Could not read settings", e);
         }
-        return current;
     }
 
-    public static synchronized void set(Quality q) {
-        current = q;
+    private static void save() {
         try {
             Files.createDirectories(file().getParent());
             Properties p = new Properties();
-            p.setProperty("quality", q.name());
+            p.setProperty("quality", current.name());
+            p.setProperty("fps", Integer.toString(fps));
             try (OutputStream out = Files.newOutputStream(file())) {
                 p.store(out, "PvP Camera");
             }
         } catch (IOException e) {
-            LOGGER.warn("Could not save quality setting", e);
+            LOGGER.warn("Could not save settings", e);
         }
+    }
+
+    public static synchronized Quality current() {
+        load();
+        return current;
+    }
+
+    public static synchronized int fps() {
+        load();
+        return fps;
+    }
+
+    public static synchronized void set(Quality q) {
+        load();
+        current = q;
+        save();
+    }
+
+    public static synchronized void setFps(int f) {
+        load();
+        fps = f == 30 ? 30 : 60;
+        save();
     }
 }

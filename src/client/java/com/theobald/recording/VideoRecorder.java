@@ -2,7 +2,6 @@ package com.theobald.recording;
 
 import com.theobald.audio.AudioTap;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.Framebuffer;
 import org.lwjgl.stb.STBIWriteCallback;
 import org.lwjgl.stb.STBImageWrite;
 import org.lwjgl.system.MemoryUtil;
@@ -16,7 +15,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,9 +36,8 @@ public final class VideoRecorder {
     private static final Logger LOGGER = LoggerFactory.getLogger("PvP Camera");
 
     public static final int MAX_SECONDS = 10 * 60;
-    public static final int FPS = 30;
-    private static final int BUFFER_POOL = 8;
-    private static final long FRAME_NANOS = 1_000_000_000L / FPS;
+    private static int fps = 60;
+    private static long frameNanos = 1_000_000_000L / 60;
     private static final long MAX_NANOS = MAX_SECONDS * 1_000_000_000L;
     private static final long MAX_BYTES = 3_600_000_000L; // AVI uses 32-bit sizes
 
@@ -46,6 +45,8 @@ public final class VideoRecorder {
     private static long startNanos;
     private static long nextCaptureNanos;
     private static Worker worker;
+    /** Stopped workers whose GPU objects still have to be released on the render thread. */
+    private static final List<Worker> retiring = new ArrayList<>();
 
     private VideoRecorder() {}
 
@@ -57,7 +58,7 @@ public final class VideoRecorder {
 
     /** Start of a rendered frame: decide whether this frame will be captured (HUD overlay is hidden then). */
     public static void beginFrame() {
-        capturing = recording && System.nanoTime() >= nextCaptureNanos;
+        capturing = recording && System.nanoTime() >= nextCaptureNanos - frameNanos / 4;
     }
 
     /** End of a rendered frame: the framebuffer now holds the finished picture. */
@@ -93,13 +94,15 @@ public final class VideoRecorder {
         if (w <= 0 || h <= 0) return;
 
         Quality q = Quality.current();
+        fps = Quality.fps();
+        frameNanos = 1_000_000_000L / fps;
         int tw = Math.max(2, Math.min(w, q.width) & ~1);
         int th = Math.max(2, (int) Math.round(h * (double) tw / w) & ~1);
 
         try {
             String name = "PvP_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
             Path finalFile = Recordings.directory().resolve(name + ".avi");
-            worker = new Worker(finalFile, tw, th, q.jpegQuality);
+            worker = new Worker(finalFile, tw, th, q.jpeg(fps), fps, frameNanos);
             worker.start();
         } catch (Throwable e) {
             LOGGER.error("Could not start recording", e);
@@ -122,8 +125,8 @@ public final class VideoRecorder {
         Worker w = worker;
         worker = null;
         if (w != null) {
-            w.grabber.close(); // GL objects: must be released on the render thread
             w.finish();
+            retiring.add(w); // GL objects are released in tick() once the encoders are done
         }
         RecordingHud.notice(limitReached ? "Kayıt sona erdi" : "Kayıt kaydedildi");
     }
@@ -139,6 +142,13 @@ public final class VideoRecorder {
 
     /** Called every client tick. */
     public static void tick() {
+        if (!retiring.isEmpty()) {
+            retiring.removeIf(r -> {
+                if (!r.encodingDone) return false;
+                r.grabber.close();
+                return true;
+            });
+        }
         if (!recording) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         Worker w = worker;
@@ -164,8 +174,8 @@ public final class VideoRecorder {
         if (w == null) return;
 
         // keep a steady cadence, but never try to "catch up" with a burst of frames
-        nextCaptureNanos += FRAME_NANOS;
-        if (now - nextCaptureNanos > FRAME_NANOS) nextCaptureNanos = now;
+        nextCaptureNanos += frameNanos;
+        if (now - nextCaptureNanos > frameNanos) nextCaptureNanos = now;
 
         w.capture(now);
     }
@@ -174,18 +184,20 @@ public final class VideoRecorder {
 
     private static final class Worker extends Thread {
         final AviMjpegWriter avi;
-        private final Path finalFile;
-        private final Path partFile;
-        private final int width, height, jpegQuality;
-        private final FrameGrabber grabber;
-        private final BlockingQueue<ByteBuffer> pool = new ArrayBlockingQueue<>(BUFFER_POOL);
-        private final BlockingQueue<Pending> pending = new LinkedBlockingQueue<>();
-        private final ExecutorService encoders;
-        private volatile boolean finishing = false;
+        final FrameGrabber grabber;
+        volatile boolean encodingDone = false;
         volatile boolean failed = false;
         volatile boolean sizeLimitHit = false;
 
-        Worker(Path finalFile, int width, int height, int jpegQuality) throws IOException {
+        private final Path finalFile;
+        private final Path partFile;
+        private final int width, height, jpegQuality, fps;
+        private final long frameNanos;
+        private final BlockingQueue<Pending> pending = new LinkedBlockingQueue<>();
+        private final ExecutorService encoders;
+        private volatile boolean finishing = false;
+
+        Worker(Path finalFile, int width, int height, int jpegQuality, int fps, long frameNanos) throws IOException {
             super("PvP Camera writer");
             setDaemon(false);
             this.finalFile = finalFile;
@@ -193,13 +205,15 @@ public final class VideoRecorder {
             this.width = width;
             this.height = height;
             this.jpegQuality = jpegQuality;
+            this.fps = fps;
+            this.frameNanos = frameNanos;
             Files.createDirectories(finalFile.getParent());
-            this.avi = new AviMjpegWriter(partFile, width, height, FPS, true);
+            this.avi = new AviMjpegWriter(partFile, width, height, fps, true);
             this.grabber = new FrameGrabber(width, height);
-            for (int i = 0; i < BUFFER_POOL; i++) pool.add(MemoryUtil.memAlloc(width * height * 4));
 
+            // leave CPU cores to the game: JPEG encoding uses only a minority of them
             int cores = Runtime.getRuntime().availableProcessors();
-            int threads = Math.max(2, Math.min(4, cores / 2));
+            int threads = Math.max(1, Math.min(3, cores / 3));
             this.encoders = Executors.newFixedThreadPool(threads, r -> {
                 Thread t = new Thread(r, "PvP Camera jpeg");
                 t.setDaemon(true);
@@ -210,22 +224,16 @@ public final class VideoRecorder {
 
         /** Render thread. */
         void capture(long now) {
-            ByteBuffer buf = pool.poll();
-            if (buf == null) return; // encoders are behind: skip this frame (the writer repeats the last one)
-            long t = grabber.grab(buf, now);
-            if (t < 0) {
-                pool.offer(buf);
-                return;
-            }
-            final ByteBuffer frame = buf;
+            final FrameGrabber.Grabbed g = grabber.grab(now);
+            if (g == null) return; // warming up, or the encoders are behind (the writer repeats the last frame)
             Future<byte[]> f = encoders.submit(() -> {
                 try {
-                    return encodeJpeg(frame, width, height, jpegQuality);
+                    return encodeJpeg(g.buf, width, height, jpegQuality);
                 } finally {
-                    pool.offer(frame);
+                    grabber.release(g);
                 }
             });
-            pending.add(new Pending(f, t - startNanos));
+            pending.add(new Pending(f, g.time - startNanos));
         }
 
         void finish() {
@@ -244,11 +252,11 @@ public final class VideoRecorder {
                         continue;
                     }
                     byte[] jpeg = p.jpeg().get();
-                    long wanted = Math.round(p.timeNanos() / (double) FRAME_NANOS); // frame slot of this picture
+                    long wanted = Math.round(p.timeNanos() / (double) frameNanos); // frame slot of this picture
                     int have = avi.getFrameCount();
-                    if (wanted < have) continue; // arrived too early for its slot: drop to keep real-time speed
+                    if (wanted < have) continue; // slot already filled: drop to keep real-time speed
                     // fill gaps (dropped frames) with the previous picture so playback speed stays correct
-                    int gap = (int) Math.min(90, wanted - have);
+                    int gap = (int) Math.min(fps * 3L, wanted - have);
                     if (last != null) {
                         for (int i = 0; i < gap; i++) avi.writeFrame(last);
                     }
@@ -262,15 +270,19 @@ public final class VideoRecorder {
                 failed = true;
             }
 
-            encoders.shutdownNow();
+            // every encoder task must be finished before the GPU buffers they read from are released
+            encoders.shutdown();
+            try {
+                encoders.awaitTermination(60, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) { }
+            encodingDone = true;
+
             try {
                 avi.close();
             } catch (Throwable t) {
                 LOGGER.error("Could not close recording file", t);
                 failed = true;
             }
-            for (ByteBuffer b : pool) MemoryUtil.memFree(b);
-            pool.clear();
 
             try {
                 if (!failed && written > 0) {
@@ -283,13 +295,25 @@ public final class VideoRecorder {
             }
         }
 
+        /** Collects the JPEG bytes written by stb (small reusable buffer, little garbage). */
+        private static final class Sink {
+            byte[] data;
+            int len;
+
+            Sink(int cap) {
+                data = new byte[cap];
+            }
+
+            void write(long ptr, int n) {
+                if (len + n > data.length) data = java.util.Arrays.copyOf(data, Math.max(data.length * 2, len + n));
+                MemoryUtil.memByteBuffer(ptr, n).get(data, len, n);
+                len += n;
+            }
+        }
+
         private static byte[] encodeJpeg(ByteBuffer rgba, int w, int h, int quality) throws IOException {
-            ByteArrayOutputStream out = new ByteArrayOutputStream(w * h / 6);
-            STBIWriteCallback cb = STBIWriteCallback.create((context, data, size) -> {
-                byte[] tmp = new byte[size];
-                MemoryUtil.memByteBuffer(data, size).get(tmp);
-                out.write(tmp, 0, size);
-            });
+            Sink sink = new Sink(w * h / 8);
+            STBIWriteCallback cb = STBIWriteCallback.create((context, data, size) -> sink.write(data, size));
             try {
                 rgba.rewind();
                 // 4 components: alpha is ignored by the JPEG writer
@@ -299,7 +323,7 @@ public final class VideoRecorder {
             } finally {
                 cb.free();
             }
-            return out.toByteArray();
+            return java.util.Arrays.copyOf(sink.data, sink.len);
         }
     }
 }

@@ -48,5 +48,5 @@ Your own mouse look / movement stay under your control. Use `/fightcam players <
 # Recording
 
 - Pause menu: red ● button opens the recordings list, the keybind starts/stops recording (max 10 min).
-- Video is 30 fps MJPEG AVI with game sound (sounds are re-mixed from the game's own sound events; music/jukebox streams are not captured).
-- Quality (HD 720p / Full HD 1080p / 2K 1440p) is selected with the "Kalite" button in the recordings list. Higher quality = bigger files (Full HD is roughly 2 GB per 10 minutes).
+- Video is MJPEG AVI (60 or 30 fps, selectable) with game sound (sounds are re-mixed from the game's own sound events; music/jukebox streams are not captured).
+- Quality (HD 720p / Full HD 1080p / 2K 1440p) and FPS (60 / 30) are selected with the buttons at the top of the recordings list. If the game lags while recording, lower the FPS or quality. Higher quality = bigger files (Full HD is roughly 2 GB per 10 minutes).

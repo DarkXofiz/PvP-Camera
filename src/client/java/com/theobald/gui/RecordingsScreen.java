@@ -28,7 +28,7 @@ public class RecordingsScreen extends Screen {
 
     @Override
     protected void init() {
-        list = new RecordingList(client, width, height, 32, height - 52, 28);
+        list = new RecordingList(client, width, height, 58, height - 52, 28);
         list.reload();
         addSelectableChild(list);
 
@@ -41,15 +41,27 @@ public class RecordingsScreen extends Screen {
         downloadButton = addDrawableChild(ButtonWidget.builder(Text.literal("İndir"), b -> downloadSelected())
                 .dimensions(width - 110, height - 28, 100, 20).build());
 
-        addDrawableChild(ButtonWidget.builder(qualityLabel(), b -> {
+        int rowX = width / 2 - 112;
+        addDrawableChild(ButtonWidget.builder(qualityLabel(), btn -> {
                     Quality.set(Quality.current().next());
-                    b.setMessage(qualityLabel());
-                }).dimensions(width - 150, 6, 144, 20)
+                    btn.setMessage(qualityLabel());
+                }).dimensions(rowX, 30, 150, 20)
                 .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
                         Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya.")))
                 .build());
+        addDrawableChild(ButtonWidget.builder(fpsLabel(), btn -> {
+                    Quality.setFps(Quality.fps() == 60 ? 30 : 60);
+                    btn.setMessage(fpsLabel());
+                }).dimensions(rowX + 154, 30, 70, 20)
+                .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
+                        Text.literal("60 FPS daha akıcı ama işlemciyi daha çok kullanır. Oyun kasarsa 30 yap.")))
+                .build());
 
         updateButtons();
+    }
+
+    private static Text fpsLabel() {
+        return Text.literal("FPS: " + Quality.fps());
     }
 
     private static Text qualityLabel() {

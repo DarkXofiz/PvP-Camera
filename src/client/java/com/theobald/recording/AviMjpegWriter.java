@@ -148,9 +148,11 @@ public final class AviMjpegWriter implements AutoCloseable {
         b.putInt(len);
         b.flip();
         index.add(new int[]{stream, (int) (position - posMoviFourcc), len});
-        writeFully(b);
-        writeFully(ByteBuffer.wrap(data));
-        if (pad == 1) writeFully(ByteBuffer.wrap(new byte[1]));
+        ByteBuffer[] parts = pad == 1
+                ? new ByteBuffer[]{b, ByteBuffer.wrap(data), ByteBuffer.wrap(new byte[1])}
+                : new ByteBuffer[]{b, ByteBuffer.wrap(data)};
+        long remaining = 8L + len + pad;
+        while (remaining > 0) remaining -= channel.write(parts);
         position += 8 + len + pad;
     }
 
