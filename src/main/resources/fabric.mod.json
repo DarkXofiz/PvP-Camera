@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"id": "pvp-camera",
+	"version": "${version}",
+	"name": "PvP Camera",
+	"description": "Side-on camera view of any 2 players, with built-in video recording (max 10 min).",
+	"authors": [
+		"TheobaldTheBird"
+	],
+	"contact": {
+		"homepage": "https://www.patreon.com/TheobaldtheBird",
+		"sources": "https://github.com/TheobaldTheBird/Fight-Camera"
+	},
+	"license": "MIT",
+	"icon": "assets/pvp-camera/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.theobald.FightCameraClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "pvp-camera.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.14.21",
+		"minecraft": "1.20.1",
+		"java": ">=17",
+		"fabric-api": "*"
+	},
+	"accessWidener": "pvp-camera.accesswidener"
+}
