@@ -46,6 +46,7 @@ public final class AudioTap {
         active = true;
         mixer = new Thread(() -> run(writer, startNanos), "PvP Camera audio mixer");
         mixer.setDaemon(true);
+        mixer.setPriority(Thread.NORM_PRIORITY - 1);
         mixer.start();
     }
 

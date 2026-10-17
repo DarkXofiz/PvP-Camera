@@ -20,6 +20,8 @@ public enum Quality {
     private static final Logger LOGGER = LoggerFactory.getLogger("PvP Camera");
     private static Quality current = FHD;
     private static int fps = 60;
+    /** FPS+ : light recording mode (max 720p, fewer encoder threads, automatic throttling when the game slows down). */
+    private static boolean boost = true;
     private static boolean loaded = false;
 
     public final String label;
@@ -56,6 +58,7 @@ public enum Quality {
             p.load(in);
             try { current = valueOf(p.getProperty("quality", FHD.name())); } catch (Exception ignored) { }
             fps = "30".equals(p.getProperty("fps")) ? 30 : 60;
+            boost = !"false".equals(p.getProperty("fpsplus"));
         } catch (Exception e) {
             LOGGER.warn("Could not read settings", e);
         }
@@ -67,6 +70,7 @@ public enum Quality {
             Properties p = new Properties();
             p.setProperty("quality", current.name());
             p.setProperty("fps", Integer.toString(fps));
+            p.setProperty("fpsplus", Boolean.toString(boost));
             try (OutputStream out = Files.newOutputStream(file())) {
                 p.store(out, "PvP Camera");
             }
@@ -94,6 +98,17 @@ public enum Quality {
     public static synchronized void setFps(int f) {
         load();
         fps = f == 30 ? 30 : 60;
+        save();
+    }
+
+    public static synchronized boolean boost() {
+        load();
+        return boost;
+    }
+
+    public static synchronized void setBoost(boolean b) {
+        load();
+        boost = b;
         save();
     }
 }

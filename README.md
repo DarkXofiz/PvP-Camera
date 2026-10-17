@@ -50,3 +50,10 @@ Your own mouse look / movement stay under your control. Use `/fightcam players <
 - Pause menu: red ● button opens the recordings list, the keybind starts/stops recording (max 10 min).
 - Video is MJPEG AVI (60 or 30 fps, selectable) with game sound (sounds are re-mixed from the game's own sound events; music/jukebox streams are not captured).
 - Quality (HD 720p / Full HD 1080p / 2K 1440p) and FPS (60 / 30) are selected with the buttons at the top of the recordings list. If the game lags while recording, lower the FPS or quality. Higher quality = bigger files (Full HD is roughly 2 GB per 10 minutes).
+
+# FPS+ (performans modu)
+
+- Kayıt listesindeki **FPS+: AÇIK/KAPALI** butonu ile açılır (varsayılan: açık).
+- Açıkken: kayıt en fazla 720p, daha az JPEG çekirdeği kullanılır ve oyun FPS'i kayıt başlamadan önceki değerin altına düşerse
+  kayıt hızı otomatik düşürülür (ekranda `FPS+ x2` gibi görünür), oyun toparlayınca tekrar yükselir.
+- Ayrıca GPU okuması artık `glFenceSync` ile bekletmeden yapılıyor ve her karede `glGetError` çağrılmıyor.

@@ -41,20 +41,27 @@ public class RecordingsScreen extends Screen {
         downloadButton = addDrawableChild(ButtonWidget.builder(Text.literal("İndir"), b -> downloadSelected())
                 .dimensions(width - 110, height - 28, 100, 20).build());
 
-        int rowX = width / 2 - 112;
+        int rowX = width / 2 - 149;
         addDrawableChild(ButtonWidget.builder(qualityLabel(), btn -> {
                     Quality.set(Quality.current().next());
                     btn.setMessage(qualityLabel());
-                }).dimensions(rowX, 30, 150, 20)
+                }).dimensions(rowX, 30, 140, 20)
                 .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
-                        Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya.")))
+                        Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya. FPS+ açıkken en fazla 720p kaydedilir.")))
                 .build());
         addDrawableChild(ButtonWidget.builder(fpsLabel(), btn -> {
                     Quality.setFps(Quality.fps() == 60 ? 30 : 60);
                     btn.setMessage(fpsLabel());
-                }).dimensions(rowX + 154, 30, 70, 20)
+                }).dimensions(rowX + 144, 30, 60, 20)
                 .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
                         Text.literal("60 FPS daha akıcı ama işlemciyi daha çok kullanır. Oyun kasarsa 30 yap.")))
+                .build());
+        addDrawableChild(ButtonWidget.builder(boostLabel(), btn -> {
+                    Quality.setBoost(!Quality.boost());
+                    btn.setMessage(boostLabel());
+                }).dimensions(rowX + 208, 30, 90, 20)
+                .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
+                        Text.literal("FPS+: kayıt sırasında oyun FPS'ini korur. Daha hafif kayıt (en fazla 720p), az işlemci çekirdeği, oyun yavaşlarsa kayıt otomatik hafifler.")))
                 .build());
 
         updateButtons();
@@ -62,6 +69,10 @@ public class RecordingsScreen extends Screen {
 
     private static Text fpsLabel() {
         return Text.literal("FPS: " + Quality.fps());
+    }
+
+    private static Text boostLabel() {
+        return Text.literal("FPS+: " + (Quality.boost() ? "AÇIK" : "KAPALI"));
     }
 
     private static Text qualityLabel() {

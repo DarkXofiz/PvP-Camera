@@ -9,6 +9,7 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL32;
 import org.lwjgl.system.MemoryUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,7 +25,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * Grabs the finished frame with almost no render-thread cost:
  *  - the GPU scales + flips it into a small framebuffer (glBlitFramebuffer),
  *  - the pixels are read back asynchronously into a ring of PBOs (no GPU stall),
- *  - a PBO is mapped two frames later and the JPEG encoder reads straight from the mapped memory
+ *  - a PBO is mapped as soon as a GL fence says the GPU is done (never stalls; falls back to a 2 frame lag) and the JPEG encoder reads straight from the mapped memory
  *    (zero copies on the render thread). The PBO is unmapped again once the encoder is done.
  * If the GPU path is not supported (some mobile GL wrappers) it falls back to slower paths.
  * Output is tightly packed RGBA, top row first.
@@ -35,6 +36,10 @@ final class FrameGrabber {
     private static final int RING = 8;   // PBOs: 2 in flight + up to 6 being encoded
     private static final int LAG = 2;    // frames between issuing a read-back and mapping it
     private static final int POOL = 6;   // fallback (copy) buffers
+    /** If the GPU still has not finished a read-back after this many frames, map it anyway (stall) so we never starve. */
+    private static final int MAX_PENDING = 4;
+    /** Only the first few captures check glGetError (it forces a CPU<->GPU sync on some drivers). */
+    private static final int VERIFY_FRAMES = 4;
 
     /** One captured frame. Call {@link #release} when the encoder is finished with it. */
     static final class Grabbed {
@@ -57,6 +62,9 @@ final class FrameGrabber {
     private final int[] state = new int[RING];         // 0 free, 1 read-back in flight, 2 mapped (owned by encoder)
     private final AtomicIntegerArray released = new AtomicIntegerArray(RING);
     private final long[] pboTime = new long[RING];
+    private final long[] fence = new long[RING];       // GL sync objects: tell us (without stalling) when a read-back is done
+    private boolean useFence = true;
+    private int verified = 0;
     private final ArrayDeque<Integer> inFlight = new ArrayDeque<>();
 
     private final ArrayBlockingQueue<ByteBuffer> pool = new ArrayBlockingQueue<>(POOL);
@@ -85,6 +93,36 @@ final class FrameGrabber {
 
     private static void clearGlErrors() {
         for (int i = 0; i < 16 && GL11.glGetError() != 0; i++) { /* drain */ }
+    }
+
+    private void dropFence(int slot) {
+        if (fence[slot] != 0) {
+            try { GL32.glDeleteSync(fence[slot]); } catch (Throwable ignored) { }
+            fence[slot] = 0;
+        }
+    }
+
+    /** True once the GPU has finished the read-back of this slot. Never blocks. */
+    private boolean fenceDone(int slot) {
+        long f = fence[slot];
+        if (f == 0) return false;
+        try {
+            int r = GL32.glClientWaitSync(f, 0, 0L);
+            if (r == GL32.GL_ALREADY_SIGNALED || r == GL32.GL_CONDITION_SATISFIED) {
+                dropFence(slot);
+                return true;
+            }
+            if (r == GL32.GL_WAIT_FAILED) {
+                useFence = false;
+                dropFence(slot);
+                return true;
+            }
+        } catch (Throwable t) {
+            useFence = false;
+            fence[slot] = 0;
+            return true;
+        }
+        return false;
     }
 
     /** Creates the PBO of a ring slot on first use (spreads the allocation over several frames). */
@@ -178,8 +216,9 @@ final class FrameGrabber {
 
         Grabbed out = null;
         boolean ok = false;
+        final boolean verify = verified < VERIFY_FRAMES;
         try {
-            clearGlErrors();
+            if (verify) clearGlErrors();
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, main.fbo);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, small.fbo);
             // destination rectangle is reversed in Y -> flips the image so rows come out top-first
@@ -193,17 +232,38 @@ final class FrameGrabber {
                 pboTime[slot] = now;
                 state[slot] = 1;
                 inFlight.add(slot);
+                if (useFence) {
+                    try {
+                        fence[slot] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                        if (fence[slot] == 0) useFence = false;
+                    } catch (Throwable t) {
+                        fence[slot] = 0;
+                        useFence = false; // no GL 3.2 sync (some mobile wrappers): fall back to frame lag
+                    }
+                }
 
-                if (inFlight.size() > LAG) {
-                    int i = inFlight.poll();
-                    GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, pbo[i]);
-                    ByteBuffer m = GL30.glMapBufferRange(GL21.GL_PIXEL_PACK_BUFFER, 0, size, GL30.GL_MAP_READ_BIT);
-                    if (m != null) {
-                        state[i] = 2;
-                        released.set(i, 0);
-                        out = new Grabbed(m, pboTime[i], i);
+                // map the oldest read-back only when the GPU is done with it -> glMapBufferRange never waits
+                Integer head = inFlight.peek();
+                if (head != null) {
+                    int i = head;
+                    boolean ready;
+                    if (fence[i] != 0) {
+                        ready = fenceDone(i) || inFlight.size() > MAX_PENDING;
                     } else {
-                        state[i] = 0;
+                        ready = inFlight.size() > LAG;
+                    }
+                    if (ready) {
+                        inFlight.poll();
+                        dropFence(i);
+                        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, pbo[i]);
+                        ByteBuffer m = GL30.glMapBufferRange(GL21.GL_PIXEL_PACK_BUFFER, 0, size, GL30.GL_MAP_READ_BIT);
+                        if (m != null) {
+                            state[i] = 2;
+                            released.set(i, 0);
+                            out = new Grabbed(m, pboTime[i], i);
+                        } else {
+                            state[i] = 0;
+                        }
                     }
                 }
                 GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
@@ -214,8 +274,11 @@ final class FrameGrabber {
                 out = new Grabbed(syncBuf, now, -1);
             }
 
-            int err = GL11.glGetError();
-            if (err != 0) throw new IllegalStateException("GL error 0x" + Integer.toHexString(err));
+            if (verify) {
+                int err = GL11.glGetError();
+                if (err != 0) throw new IllegalStateException("GL error 0x" + Integer.toHexString(err));
+                verified++;
+            }
             ok = true;
         } finally {
             restore();
@@ -270,6 +333,7 @@ final class FrameGrabber {
                 }
             }
             GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
+            for (int i = 0; i < RING; i++) dropFence(i);
             for (int i = 0; i < RING; i++) {
                 if (pbo[i] != 0) GL15.glDeleteBuffers(pbo[i]);
             }

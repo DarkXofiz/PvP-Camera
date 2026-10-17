@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * In-game video + audio recorder (AVI / MJPEG + PCM).
@@ -56,9 +57,77 @@ public final class VideoRecorder {
         return capturing;
     }
 
+    // ---- FPS+ governor (render thread only) -------------------------------------------------------
+    private static final long SECOND = 1_000_000_000L;
+    private static final int MAX_LEVEL = 3;                 // capture interval = frame interval * (level + 1)
+    private static long fpsWindowStart = 0;
+    private static int fpsFrames = 0;
+    private static double baselineFps = 0;                  // game fps measured while NOT recording
+    private static volatile int level = 0;
+    private static long captureInterval = 1_000_000_000L / 60;
+    private static int badStreak = 0, goodStreak = 0;
+    private static int recoverAfter = 15;                   // seconds of healthy fps before relaxing again
+    private static long lastRaise = 0, lastRecover = 0;
+
+    /** 0 = full rate; higher = FPS+ is throttling the capture because the game slowed down. */
+    public static int throttleLevel() {
+        return level;
+    }
+
+    private static void resetGovernor() {
+        level = 0;
+        badStreak = goodStreak = 0;
+        recoverAfter = 15;
+        lastRaise = lastRecover = 0;
+        captureInterval = frameNanos;
+    }
+
+    /** Called once per second with the game's current fps. */
+    private static void onFpsSample(double f, long now) {
+        if (!recording) {
+            baselineFps = baselineFps <= 0 ? f : baselineFps * 0.6 + f * 0.4;
+            return;
+        }
+        if (!Quality.boost() || baselineFps < 25) return;
+        double ratio = f / baselineFps;
+        if (ratio < 0.85) {
+            goodStreak = 0;
+            if (++badStreak >= 2 && level < MAX_LEVEL) {
+                badStreak = 0;
+                // throttled again right after relaxing: wait longer before the next relax attempt
+                if (lastRecover != 0 && now - lastRecover < 8 * SECOND) recoverAfter = Math.min(recoverAfter * 2, 120);
+                lastRaise = now;
+                level++;
+                captureInterval = frameNanos * (level + 1);
+            }
+        } else if (ratio >= 0.95) {
+            badStreak = 0;
+            if (level > 0 && ++goodStreak >= recoverAfter) {
+                goodStreak = 0;
+                lastRecover = now;
+                level--;
+                captureInterval = frameNanos * (level + 1);
+            } else if (level == 0 && recoverAfter > 15 && now - lastRecover > 60 * SECOND) {
+                recoverAfter = 15;
+            }
+        } else {
+            badStreak = 0;
+        }
+    }
+
     /** Start of a rendered frame: decide whether this frame will be captured (HUD overlay is hidden then). */
     public static void beginFrame() {
-        capturing = recording && System.nanoTime() >= nextCaptureNanos - frameNanos / 4;
+        long now = System.nanoTime();
+        fpsFrames++;
+        if (fpsWindowStart == 0) {
+            fpsWindowStart = now;
+        } else if (now - fpsWindowStart >= SECOND) {
+            double f = fpsFrames * (double) SECOND / (now - fpsWindowStart);
+            fpsFrames = 0;
+            fpsWindowStart = now;
+            onFpsSample(f, now);
+        }
+        capturing = recording && now >= nextCaptureNanos - captureInterval / 4;
     }
 
     /** End of a rendered frame: the framebuffer now holds the finished picture. */
@@ -96,7 +165,9 @@ public final class VideoRecorder {
         Quality q = Quality.current();
         fps = Quality.fps();
         frameNanos = 1_000_000_000L / fps;
-        int tw = Math.max(2, Math.min(w, q.width) & ~1);
+        // FPS+ keeps the recording light: never more than 720p wide
+        int maxW = Quality.boost() ? Math.min(q.width, 1280) : q.width;
+        int tw = Math.max(2, Math.min(w, maxW) & ~1);
         int th = Math.max(2, (int) Math.round(h * (double) tw / w) & ~1);
 
         try {
@@ -113,6 +184,7 @@ public final class VideoRecorder {
 
         startNanos = System.nanoTime();
         nextCaptureNanos = startNanos;
+        resetGovernor();
         recording = true;
         AudioTap.start(worker.avi, startNanos);
     }
@@ -174,8 +246,8 @@ public final class VideoRecorder {
         if (w == null) return;
 
         // keep a steady cadence, but never try to "catch up" with a burst of frames
-        nextCaptureNanos += frameNanos;
-        if (now - nextCaptureNanos > frameNanos) nextCaptureNanos = now;
+        nextCaptureNanos += captureInterval;
+        if (now - nextCaptureNanos > captureInterval) nextCaptureNanos = now;
 
         w.capture(now);
     }
@@ -196,10 +268,14 @@ public final class VideoRecorder {
         private final BlockingQueue<Pending> pending = new LinkedBlockingQueue<>();
         private final ExecutorService encoders;
         private volatile boolean finishing = false;
+        private final AtomicInteger busy = new AtomicInteger();
+        private final int maxBusy;
+        private final STBIWriteCallback jpegCb = STBIWriteCallback.create((ctx, data, size) -> SINK.get().write(data, size));
 
         Worker(Path finalFile, int width, int height, int jpegQuality, int fps, long frameNanos) throws IOException {
             super("PvP Camera writer");
             setDaemon(false);
+            setPriority(Thread.NORM_PRIORITY - 1);
             this.finalFile = finalFile;
             this.partFile = finalFile.resolveSibling(finalFile.getFileName() + ".part");
             this.width = width;
@@ -213,7 +289,10 @@ public final class VideoRecorder {
 
             // leave CPU cores to the game: JPEG encoding uses only a minority of them
             int cores = Runtime.getRuntime().availableProcessors();
-            int threads = Math.max(1, Math.min(3, cores / 3));
+            int threads = Quality.boost()
+                    ? Math.max(1, Math.min(2, cores / 3))
+                    : Math.max(1, Math.min(3, cores / 3));
+            this.maxBusy = threads * 2;
             this.encoders = Executors.newFixedThreadPool(threads, r -> {
                 Thread t = new Thread(r, "PvP Camera jpeg");
                 t.setDaemon(true);
@@ -224,15 +303,26 @@ public final class VideoRecorder {
 
         /** Render thread. */
         void capture(long now) {
+            // encoders are behind: do not even touch the GPU for this frame (the writer repeats the last picture)
+            if (busy.get() >= maxBusy) return;
             final FrameGrabber.Grabbed g = grabber.grab(now);
-            if (g == null) return; // warming up, or the encoders are behind (the writer repeats the last frame)
-            Future<byte[]> f = encoders.submit(() -> {
-                try {
-                    return encodeJpeg(g.buf, width, height, jpegQuality);
-                } finally {
-                    grabber.release(g);
-                }
-            });
+            if (g == null) return; // warming up, or the encoders are behind
+            busy.incrementAndGet();
+            Future<byte[]> f;
+            try {
+                f = encoders.submit(() -> {
+                    try {
+                        return encodeJpeg(g.buf, width, height, jpegQuality);
+                    } finally {
+                        grabber.release(g);
+                        busy.decrementAndGet();
+                    }
+                });
+            } catch (RuntimeException e) { // pool already shut down
+                grabber.release(g);
+                busy.decrementAndGet();
+                return;
+            }
             pending.add(new Pending(f, g.time - startNanos));
         }
 
@@ -276,6 +366,7 @@ public final class VideoRecorder {
                 encoders.awaitTermination(60, TimeUnit.SECONDS);
             } catch (InterruptedException ignored) { }
             encodingDone = true;
+            jpegCb.free();
 
             try {
                 avi.close();
@@ -295,7 +386,7 @@ public final class VideoRecorder {
             }
         }
 
-        /** Collects the JPEG bytes written by stb (small reusable buffer, little garbage). */
+        /** Collects the JPEG bytes written by stb (one reusable buffer per encoder thread, little garbage). */
         private static final class Sink {
             byte[] data;
             int len;
@@ -311,17 +402,15 @@ public final class VideoRecorder {
             }
         }
 
-        private static byte[] encodeJpeg(ByteBuffer rgba, int w, int h, int quality) throws IOException {
-            Sink sink = new Sink(w * h / 8);
-            STBIWriteCallback cb = STBIWriteCallback.create((context, data, size) -> sink.write(data, size));
-            try {
-                rgba.rewind();
-                // 4 components: alpha is ignored by the JPEG writer
-                if (STBImageWrite.stbi_write_jpg_to_func(cb, 0L, w, h, 4, rgba, quality) == 0) {
-                    throw new IOException("JPEG encoding failed");
-                }
-            } finally {
-                cb.free();
+        private static final ThreadLocal<Sink> SINK = ThreadLocal.withInitial(() -> new Sink(1 << 18));
+
+        private byte[] encodeJpeg(ByteBuffer rgba, int w, int h, int quality) throws IOException {
+            Sink sink = SINK.get();
+            sink.len = 0;
+            rgba.rewind();
+            // 4 components: alpha is ignored by the JPEG writer
+            if (STBImageWrite.stbi_write_jpg_to_func(jpegCb, 0L, w, h, 4, rgba, quality) == 0) {
+                throw new IOException("JPEG encoding failed");
             }
             return java.util.Arrays.copyOf(sink.data, sink.len);
         }

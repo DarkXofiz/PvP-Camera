@@ -11,6 +11,8 @@ public final class RecordingHud {
 
     private static volatile String noticeText = "";
     private static volatile long noticeUntil = 0;
+    private static String cachedHud = "";
+    private static int cachedSec = -1, cachedLevel = -1;
 
     private RecordingHud() {}
 
@@ -26,12 +28,18 @@ public final class RecordingHud {
 
         if (VideoRecorder.isRecording()) {
             int s = VideoRecorder.elapsedSeconds();
-            String time = String.format("%02d:%02d / %02d:%02d", s / 60, s % 60,
-                    VideoRecorder.MAX_SECONDS / 60, VideoRecorder.MAX_SECONDS % 60);
+            int lvl = VideoRecorder.throttleLevel();
+            if (s != cachedSec || lvl != cachedLevel) { // build the text once per second, not every frame
+                cachedSec = s;
+                cachedLevel = lvl;
+                cachedHud = String.format("REC %02d:%02d / %02d:%02d", s / 60, s % 60,
+                        VideoRecorder.MAX_SECONDS / 60, VideoRecorder.MAX_SECONDS % 60)
+                        + (lvl > 0 ? "  FPS+ x" + (lvl + 1) : "");
+            }
             if ((System.currentTimeMillis() / 500) % 2 == 0) {
                 ctx.fill(6, 6, 12, 12, 0xFFFF2020);
             }
-            ctx.drawTextWithShadow(tr, "REC " + time, 16, 5, 0xFFFFFFFF);
+            ctx.drawTextWithShadow(tr, cachedHud, 16, 5, 0xFFFFFFFF);
         }
 
         long left = noticeUntil - System.currentTimeMillis();
