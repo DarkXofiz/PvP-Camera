@@ -11,81 +11,123 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Minimal AVI container writer for MJPEG (one JPEG per frame).
- * No external libraries are needed. Header sizes are patched when the file is closed.
+ * Minimal AVI writer: one MJPEG video stream + one 16-bit stereo PCM audio stream.
+ * No external libraries. Header sizes are patched when the file is closed.
+ * writeFrame / writeAudio may be called from different threads.
  */
 public final class AviMjpegWriter implements AutoCloseable {
-    // Fixed header layout (see the header() method): the 'movi' list starts at byte 212
-    private static final int POS_RIFF_SIZE = 4;
-    private static final int POS_TOTAL_FRAMES = 48;
-    private static final int POS_STREAM_LENGTH = 140;
-    private static final int POS_MOVI_SIZE = 216;
-    private static final int POS_MOVI_FOURCC = 220;
-    private static final int HEADER_SIZE = 224;
+    public static final int AUDIO_RATE = 44100;
+    private static final int AUDIO_BLOCK = 4; // 2 channels * 16 bit
 
     private final FileChannel channel;
     private final int width;
     private final int height;
     private final int fps;
-    private final List<int[]> index = new ArrayList<>();
-    private long position;
-    private int frames;
+    private final boolean withAudio;
 
-    public AviMjpegWriter(Path file, int width, int height, int fps) throws IOException {
+    // positions of header fields that are patched on close
+    private int posRiffSize, posTotalFrames, posVideoLength, posAudioLength, posMoviSize, posMoviFourcc;
+
+    private final List<int[]> index = new ArrayList<>(); // {stream(0=video,1=audio), offset, length}
+    private long position;
+    private int videoFrames;
+    private long audioSamples;
+    private boolean closed;
+
+    public AviMjpegWriter(Path file, int width, int height, int fps, boolean withAudio) throws IOException {
         this.width = width;
         this.height = height;
         this.fps = fps;
+        this.withAudio = withAudio;
         this.channel = FileChannel.open(file,
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
-        writeFully(header());
-        this.position = HEADER_SIZE;
+        ByteBuffer h = header();
+        writeFully(h);
+        this.position = h.limit();
     }
 
-    public int getFrameCount() {
-        return frames;
+    public synchronized int getFrameCount() {
+        return videoFrames;
+    }
+
+    public synchronized long getBytesWritten() {
+        return position;
     }
 
     private ByteBuffer header() {
-        ByteBuffer b = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN);
-        cc(b, "RIFF"); b.putInt(0); cc(b, "AVI ");
-        cc(b, "LIST"); b.putInt(192); cc(b, "hdrl");
+        ByteBuffer b = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN);
+        cc(b, "RIFF"); posRiffSize = b.position(); b.putInt(0); cc(b, "AVI ");
+
+        cc(b, "LIST"); int hdrlSizePos = b.position(); b.putInt(0); cc(b, "hdrl");
+        int hdrlStart = b.position() - 4;
+
         cc(b, "avih"); b.putInt(56);
-        b.putInt(1_000_000 / fps);   // microseconds per frame
-        b.putInt(0);                 // max bytes per second
-        b.putInt(0);                 // padding granularity
+        b.putInt(1_000_000 / fps);
+        b.putInt(0);
+        b.putInt(0);
         b.putInt(0x10);              // AVIF_HASINDEX
-        b.putInt(0);                 // total frames (patched on close)
-        b.putInt(0);                 // initial frames
-        b.putInt(1);                 // streams
-        b.putInt(1 << 20);           // suggested buffer size
+        posTotalFrames = b.position(); b.putInt(0);
+        b.putInt(0);
+        b.putInt(withAudio ? 2 : 1); // streams
+        b.putInt(1 << 20);
         b.putInt(width);
         b.putInt(height);
         b.putInt(0); b.putInt(0); b.putInt(0); b.putInt(0);
-        cc(b, "LIST"); b.putInt(116); cc(b, "strl");
+
+        // video stream
+        cc(b, "LIST"); b.putInt(4 + 64 + 48); cc(b, "strl");
         cc(b, "strh"); b.putInt(56);
         cc(b, "vids"); cc(b, "MJPG");
-        b.putInt(0);                 // flags
-        b.putShort((short) 0); b.putShort((short) 0); // priority, language
-        b.putInt(0);                 // initial frames
+        b.putInt(0);
+        b.putShort((short) 0); b.putShort((short) 0);
+        b.putInt(0);
         b.putInt(1);                 // scale
         b.putInt(fps);               // rate
-        b.putInt(0);                 // start
-        b.putInt(0);                 // length (patched on close)
-        b.putInt(1 << 20);           // suggested buffer size
-        b.putInt(-1);                // quality
-        b.putInt(0);                 // sample size
+        b.putInt(0);
+        posVideoLength = b.position(); b.putInt(0);
+        b.putInt(1 << 20);
+        b.putInt(-1);
+        b.putInt(0);
         b.putShort((short) 0); b.putShort((short) 0);
         b.putShort((short) width); b.putShort((short) height);
         cc(b, "strf"); b.putInt(40);
-        b.putInt(40);                // BITMAPINFOHEADER size
+        b.putInt(40);
         b.putInt(width);
         b.putInt(height);
-        b.putShort((short) 1);       // planes
-        b.putShort((short) 24);      // bit count
+        b.putShort((short) 1);
+        b.putShort((short) 24);
         cc(b, "MJPG");
         b.putInt(width * height * 3);
         b.putInt(0); b.putInt(0); b.putInt(0); b.putInt(0);
-        cc(b, "LIST"); b.putInt(0); cc(b, "movi");
+
+        if (withAudio) {
+            cc(b, "LIST"); b.putInt(4 + 64 + 26); cc(b, "strl");
+            cc(b, "strh"); b.putInt(56);
+            cc(b, "auds"); b.putInt(0);
+            b.putInt(0);
+            b.putShort((short) 0); b.putShort((short) 0);
+            b.putInt(0);
+            b.putInt(1);                 // scale
+            b.putInt(AUDIO_RATE);        // rate  -> samples per second
+            b.putInt(0);
+            posAudioLength = b.position(); b.putInt(0);
+            b.putInt(1 << 16);
+            b.putInt(-1);
+            b.putInt(AUDIO_BLOCK);       // sample size
+            b.putShort((short) 0); b.putShort((short) 0); b.putShort((short) 0); b.putShort((short) 0);
+            cc(b, "strf"); b.putInt(18);
+            b.putShort((short) 1);             // PCM
+            b.putShort((short) 2);             // channels
+            b.putInt(AUDIO_RATE);
+            b.putInt(AUDIO_RATE * AUDIO_BLOCK);
+            b.putShort((short) AUDIO_BLOCK);
+            b.putShort((short) 16);
+            b.putShort((short) 0);             // cbSize
+        }
+        int hdrlEnd = b.position();
+        b.putInt(hdrlSizePos, hdrlEnd - hdrlStart);
+
+        cc(b, "LIST"); posMoviSize = b.position(); b.putInt(0); posMoviFourcc = b.position(); cc(b, "movi");
         b.flip();
         return b;
     }
@@ -98,23 +140,37 @@ public final class AviMjpegWriter implements AutoCloseable {
         while (b.hasRemaining()) channel.write(b);
     }
 
-    public void writeFrame(byte[] jpeg) throws IOException {
-        int len = jpeg.length;
+    private void writeChunk(String id, byte[] data, int stream) throws IOException {
+        int len = data.length;
         int pad = len & 1;
-        ByteBuffer b = ByteBuffer.allocate(8 + len + pad).order(ByteOrder.LITTLE_ENDIAN);
-        cc(b, "00dc");
+        ByteBuffer b = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+        cc(b, id);
         b.putInt(len);
-        b.put(jpeg);
-        if (pad == 1) b.put((byte) 0);
         b.flip();
-        index.add(new int[]{(int) (position - POS_MOVI_FOURCC), len});
+        index.add(new int[]{stream, (int) (position - posMoviFourcc), len});
         writeFully(b);
+        writeFully(ByteBuffer.wrap(data));
+        if (pad == 1) writeFully(ByteBuffer.wrap(new byte[1]));
         position += 8 + len + pad;
-        frames++;
+    }
+
+    public synchronized void writeFrame(byte[] jpeg) throws IOException {
+        if (closed) return;
+        writeChunk("00dc", jpeg, 0);
+        videoFrames++;
+    }
+
+    /** 16-bit little-endian stereo PCM at {@link #AUDIO_RATE}. */
+    public synchronized void writeAudio(byte[] pcm) throws IOException {
+        if (closed || !withAudio || pcm.length == 0) return;
+        writeChunk("01wb", pcm, 1);
+        audioSamples += pcm.length / AUDIO_BLOCK;
     }
 
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
+        if (closed) return;
+        closed = true;
         try {
             long moviEnd = position;
 
@@ -122,19 +178,20 @@ public final class AviMjpegWriter implements AutoCloseable {
             cc(idx, "idx1");
             idx.putInt(16 * index.size());
             for (int[] e : index) {
-                cc(idx, "00dc");
-                idx.putInt(0x10); // AVIIF_KEYFRAME
-                idx.putInt(e[0]);
+                cc(idx, e[0] == 0 ? "00dc" : "01wb");
+                idx.putInt(e[0] == 0 ? 0x10 : 0);
                 idx.putInt(e[1]);
+                idx.putInt(e[2]);
             }
             idx.flip();
             writeFully(idx);
             position += idx.limit();
 
-            patch(POS_RIFF_SIZE, (int) (position - 8));
-            patch(POS_TOTAL_FRAMES, frames);
-            patch(POS_STREAM_LENGTH, frames);
-            patch(POS_MOVI_SIZE, (int) (moviEnd - POS_MOVI_FOURCC));
+            patch(posRiffSize, (int) (position - 8));
+            patch(posTotalFrames, videoFrames);
+            patch(posVideoLength, videoFrames);
+            if (withAudio) patch(posAudioLength, (int) audioSamples);
+            patch(posMoviSize, (int) (moviEnd - posMoviFourcc));
         } finally {
             channel.close();
         }

@@ -44,3 +44,9 @@ Your own mouse look / movement stay under your control. Use `/fightcam players <
 /fightcam anchor avg sets the camera to follow the average position of both players
 
 /fightcam anchor <p1/p2> sets the camera to follow the first or second player (automatically sets distance to be fixed)
+
+# Recording
+
+- Pause menu: red ● button opens the recordings list, the keybind starts/stops recording (max 10 min).
+- Video is 30 fps MJPEG AVI with game sound (sounds are re-mixed from the game's own sound events; music/jukebox streams are not captured).
+- Quality (HD 720p / Full HD 1080p / 2K 1440p) is selected with the "Kalite" button in the recordings list. Higher quality = bigger files (Full HD is roughly 2 GB per 10 minutes).

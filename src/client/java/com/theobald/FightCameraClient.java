@@ -127,6 +127,8 @@ public class FightCameraClient implements ClientModInitializer {
 		WorldRenderEvents.START.register(context -> onRender(context.tickDelta()));
 
 		HudRenderCallback.EVENT.register(RecordingHud::render);
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
+				.register(c -> VideoRecorder.shutdown());
 
 		// Small square button on the right of the pause menu -> opens the recordings list
 		ScreenEvents.AFTER_INIT.register((mc, screen, scaledWidth, scaledHeight) -> {

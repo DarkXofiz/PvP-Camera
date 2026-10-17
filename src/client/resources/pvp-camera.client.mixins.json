@@ -5,6 +5,8 @@
   "client": [
     "CameraMixin",
     "MinecraftClientMixin",
+    "SourceMixin",
+    "StaticSoundMixin",
     "LivingEntityRendererMixin",
     "PerspectiveMixin",
     "PlayerEntityMixin"

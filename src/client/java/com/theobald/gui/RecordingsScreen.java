@@ -1,5 +1,6 @@
 package com.theobald.gui;
 
+import com.theobald.recording.Quality;
 import com.theobald.recording.Recordings;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -40,7 +41,19 @@ public class RecordingsScreen extends Screen {
         downloadButton = addDrawableChild(ButtonWidget.builder(Text.literal("İndir"), b -> downloadSelected())
                 .dimensions(width - 110, height - 28, 100, 20).build());
 
+        addDrawableChild(ButtonWidget.builder(qualityLabel(), b -> {
+                    Quality.set(Quality.current().next());
+                    b.setMessage(qualityLabel());
+                }).dimensions(width - 150, 6, 144, 20)
+                .tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(
+                        Text.literal("Sonraki kayıttan itibaren geçerli. Yüksek kalite = daha büyük dosya.")))
+                .build());
+
         updateButtons();
+    }
+
+    private static Text qualityLabel() {
+        return Text.literal("Kalite: " + Quality.current().label);
     }
 
     private void updateButtons() {
