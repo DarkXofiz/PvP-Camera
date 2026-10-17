@@ -91,6 +91,13 @@ final class FrameGrabber {
         }
     }
 
+    /** 0 = fast path, 1 = no GL fences (lag based), 2 = synchronous / CPU read-back (stalls the GPU every capture). */
+    int slowness() {
+        if (!gpu || !usePbo) return 2;
+        if (!useFence) return 1;
+        return 0;
+    }
+
     private static void clearGlErrors() {
         for (int i = 0; i < 16 && GL11.glGetError() != 0; i++) { /* drain */ }
     }

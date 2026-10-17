@@ -59,11 +59,12 @@ public final class VideoRecorder {
 
     // ---- FPS+ governor (render thread only) -------------------------------------------------------
     private static final long SECOND = 1_000_000_000L;
-    private static final int MAX_LEVEL = 3;                 // capture interval = frame interval * (level + 1)
+    private static final int MAX_LEVEL = 5;                 // capture interval = frame interval * (level + 1)
     private static long fpsWindowStart = 0;
     private static int fpsFrames = 0;
     private static double baselineFps = 0;                  // game fps measured while NOT recording
     private static volatile int level = 0;
+    private static long floorInterval = 0;                  // minimum capture interval when the GL read-back is slow (mobile)
     private static long captureInterval = 1_000_000_000L / 60;
     private static int badStreak = 0, goodStreak = 0;
     private static int recoverAfter = 15;                   // seconds of healthy fps before relaxing again
@@ -74,12 +75,17 @@ public final class VideoRecorder {
         return level;
     }
 
+    private static void updateInterval() {
+        captureInterval = Math.max(frameNanos * (level + 1), floorInterval);
+    }
+
     private static void resetGovernor() {
+        floorInterval = 0;
         level = 0;
         badStreak = goodStreak = 0;
         recoverAfter = 15;
         lastRaise = lastRecover = 0;
-        captureInterval = frameNanos;
+        updateInterval();
     }
 
     /** Called once per second with the game's current fps. */
@@ -90,15 +96,15 @@ public final class VideoRecorder {
         }
         if (!Quality.boost() || baselineFps < 25) return;
         double ratio = f / baselineFps;
-        if (ratio < 0.85) {
+        if (ratio < 0.9) {
             goodStreak = 0;
-            if (++badStreak >= 2 && level < MAX_LEVEL) {
+            if (++badStreak >= 1 && level < MAX_LEVEL) {
                 badStreak = 0;
                 // throttled again right after relaxing: wait longer before the next relax attempt
                 if (lastRecover != 0 && now - lastRecover < 8 * SECOND) recoverAfter = Math.min(recoverAfter * 2, 120);
                 lastRaise = now;
                 level++;
-                captureInterval = frameNanos * (level + 1);
+                updateInterval();
             }
         } else if (ratio >= 0.95) {
             badStreak = 0;
@@ -106,7 +112,7 @@ public final class VideoRecorder {
                 goodStreak = 0;
                 lastRecover = now;
                 level--;
-                captureInterval = frameNanos * (level + 1);
+                updateInterval();
             } else if (level == 0 && recoverAfter > 15 && now - lastRecover > 60 * SECOND) {
                 recoverAfter = 15;
             }
@@ -163,10 +169,11 @@ public final class VideoRecorder {
         if (w <= 0 || h <= 0) return;
 
         Quality q = Quality.current();
-        fps = Quality.fps();
+        boolean boost = Quality.boost();
+        fps = boost ? Math.min(Quality.fps(), 30) : Quality.fps();
         frameNanos = 1_000_000_000L / fps;
-        // FPS+ keeps the recording light: never more than 720p wide
-        int maxW = Quality.boost() ? Math.min(q.width, 1280) : q.width;
+        // FPS+ keeps the recording light: max 480p wide and 30 fps (phones/tablets cannot read back big frames fast)
+        int maxW = boost ? Math.min(q.width, 854) : q.width;
         int tw = Math.max(2, Math.min(w, maxW) & ~1);
         int th = Math.max(2, (int) Math.round(h * (double) tw / w) & ~1);
 
@@ -269,6 +276,8 @@ public final class VideoRecorder {
         private final ExecutorService encoders;
         private volatile boolean finishing = false;
         private final AtomicInteger busy = new AtomicInteger();
+        private boolean slowChecked = false;
+        private int checkedFrames = 0;
         private final int maxBusy;
         private final STBIWriteCallback jpegCb = STBIWriteCallback.create((ctx, data, size) -> SINK.get().write(data, size));
 
@@ -306,6 +315,15 @@ public final class VideoRecorder {
             // encoders are behind: do not even touch the GPU for this frame (the writer repeats the last picture)
             if (busy.get() >= maxBusy) return;
             final FrameGrabber.Grabbed g = grabber.grab(now);
+            if (!slowChecked && Quality.boost()) {
+                int sl = grabber.slowness();
+                if (sl > 0 || ++checkedFrames >= 10) slowChecked = true;
+                if (sl > 0) {
+                    // read-back stalls the GPU (typical on mobile GL wrappers): capture far less often
+                    floorInterval = sl == 2 ? SECOND / 12 : SECOND / 20;
+                    updateInterval();
+                }
+            }
             if (g == null) return; // warming up, or the encoders are behind
             busy.incrementAndGet();
             Future<byte[]> f;
