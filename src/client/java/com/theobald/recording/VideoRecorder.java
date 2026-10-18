@@ -59,65 +59,63 @@ public final class VideoRecorder {
 
     // ---- FPS+ governor (render thread only) -------------------------------------------------------
     private static final long SECOND = 1_000_000_000L;
-    private static final int MAX_LEVEL = 5;                 // capture interval = frame interval * (level + 1)
+    /** The capture interval is at most this many times the frame interval (3x = 10 fps when recording at 30). */
+    private static final double MAX_SLOWDOWN = 3.0;
     private static long fpsWindowStart = 0;
     private static int fpsFrames = 0;
-    private static double baselineFps = 0;                  // game fps measured while NOT recording
-    private static volatile int level = 0;
+    private static double baselineFps = 0;                  // game fps measured in the world while NOT recording
+    /**
+     * Capture interval multiplier. It changes smoothly (back off 25% when the game slows down, creep back 5% per
+     * second when it is healthy) so the recording settles near the rate the device can really sustain instead of
+     * jumping between 30 / 15 / 10 fps, which is what made recordings look choppy.
+     */
+    private static double slowdown = 1.0;
     private static long floorInterval = 0;                  // minimum capture interval when the GL read-back is slow (mobile)
     private static long captureInterval = 1_000_000_000L / 60;
-    private static int badStreak = 0, goodStreak = 0;
-    private static int recoverAfter = 15;                   // seconds of healthy fps before relaxing again
-    private static long lastRaise = 0, lastRecover = 0;
+    private static int framesCaptured = 0;                  // for the summary shown when recording ends
 
-    /** 0 = full rate; higher = FPS+ is throttling the capture because the game slowed down. */
+    /** Frames per second the recorder is capturing at the moment (what the video will actually contain). */
+    public static int effectiveFps() {
+        return (int) Math.round(SECOND / (double) Math.max(1L, captureInterval));
+    }
+
+    /** Frame rate of the video file. */
+    public static int nominalFps() {
+        return fps;
+    }
+
+    /** 0 = full rate; 1 = FPS+ is throttling the capture because the game slowed down. */
     public static int throttleLevel() {
-        return level;
+        return effectiveFps() < fps * 0.9 ? 1 : 0;
     }
 
     private static void updateInterval() {
-        captureInterval = Math.max(frameNanos * (level + 1), floorInterval);
+        captureInterval = Math.max((long) (frameNanos * slowdown), floorInterval);
     }
 
     private static void resetGovernor() {
         floorInterval = 0;
-        level = 0;
-        badStreak = goodStreak = 0;
-        recoverAfter = 15;
-        lastRaise = lastRecover = 0;
+        slowdown = 1.0;
+        framesCaptured = 0;
         updateInterval();
     }
 
     /** Called once per second with the game's current fps. */
     private static void onFpsSample(double f, long now) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.world == null || mc.currentScreen != null) return; // menus / loading screens say nothing about gameplay fps
         if (!recording) {
             baselineFps = baselineFps <= 0 ? f : baselineFps * 0.6 + f * 0.4;
             return;
         }
         if (!Quality.boost() || baselineFps < 25) return;
         double ratio = f / baselineFps;
-        if (ratio < 0.8) {
-            goodStreak = 0;
-            if (++badStreak >= 2 && level < MAX_LEVEL) {
-                badStreak = 0;
-                // throttled again right after relaxing: wait longer before the next relax attempt
-                if (lastRecover != 0 && now - lastRecover < 8 * SECOND) recoverAfter = Math.min(recoverAfter * 2, 120);
-                lastRaise = now;
-                level++;
-                updateInterval();
-            }
-        } else if (ratio >= 0.95) {
-            badStreak = 0;
-            if (level > 0 && ++goodStreak >= recoverAfter) {
-                goodStreak = 0;
-                lastRecover = now;
-                level--;
-                updateInterval();
-            } else if (level == 0 && recoverAfter > 15 && now - lastRecover > 60 * SECOND) {
-                recoverAfter = 15;
-            }
-        } else {
-            badStreak = 0;
+        if (ratio < 0.85) {
+            slowdown = Math.min(MAX_SLOWDOWN, slowdown * 1.25);
+            updateInterval();
+        } else if (ratio > 0.95 && slowdown > 1.0) {
+            slowdown = Math.max(1.0, slowdown / 1.05);
+            updateInterval();
         }
     }
 
@@ -208,7 +206,13 @@ public final class VideoRecorder {
             w.finish();
             retiring.add(w); // GL objects are released in tick() once the encoders are done
         }
-        RecordingHud.notice(limitReached ? "Kayıt sona erdi" : "Kayıt kaydedildi");
+        double secs = Math.max(1.0, (System.nanoTime() - startNanos) / 1e9);
+        int avg = (int) Math.round(framesCaptured / secs);
+        String msg = limitReached ? "Kayıt sona erdi" : "Kayıt kaydedildi";
+        if (avg < fps * 0.8) {
+            msg += " (ort. " + avg + " fps - oyun yavaşladığı için düşük)";
+        }
+        RecordingHud.notice(msg);
     }
 
     /** Called when the game closes: finish the file properly. */
@@ -253,11 +257,16 @@ public final class VideoRecorder {
         Worker w = worker;
         if (w == null) return;
 
-        // keep a steady cadence, but never try to "catch up" with a burst of frames
-        nextCaptureNanos += captureInterval;
-        if (now - nextCaptureNanos > captureInterval) nextCaptureNanos = now;
+        // Every capture stands for an exact slot on the video's time grid (not for the jittery moment the game
+        // happened to render it). That gives perfectly even frame spacing; only when we really fell behind
+        // do we re-sync, and the missed slots then repeat the previous picture.
+        long sched = nextCaptureNanos;
+        if (now - sched > captureInterval) {
+            sched = startNanos + Math.round((now - startNanos) / (double) frameNanos) * frameNanos;
+        }
+        nextCaptureNanos = sched + captureInterval;
 
-        w.capture(now);
+        w.capture(sched);
     }
 
     private record Pending(Future<byte[]> jpeg, long timeNanos) {}
@@ -331,6 +340,7 @@ public final class VideoRecorder {
                 }
             }
             if (g == null) return; // warming up, or the encoders are behind
+            framesCaptured++;
             busy.incrementAndGet();
             Future<byte[]> f;
             try {

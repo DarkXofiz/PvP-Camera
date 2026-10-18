@@ -58,3 +58,8 @@ Your own mouse look / movement stay under your control. Use `/fightcam players <
   kayıt hızı otomatik düşürülür (ekranda `FPS+ x2` gibi görünür), oyun toparlayınca tekrar yükselir.
 - Ayrıca GPU okuması artık `glFenceSync` ile bekletmeden yapılıyor ve her karede `glGetError` çağrılmıyor.
 - Her karenin oyuna maliyeti ölçülür; yavaş cihazlarda kare sıklığı, oyunu kasmayacak en yüksek değere otomatik ayarlanır.
+
+# Camera
+
+- Toggle key (;) : the camera now follows **you** (chase camera behind you, `/fightcam distance <n>` sets how far). It no longer targets the nearest opponent.
+- `/fightcam players <p1> <p2>` still gives the old side camera on two named players.

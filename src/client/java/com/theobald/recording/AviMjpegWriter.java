@@ -7,6 +7,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,6 +33,8 @@ public final class AviMjpegWriter implements AutoCloseable {
     private long position;
     private int videoFrames;
     private long audioSamples;
+    private final ArrayDeque<byte[]> pendingAudio = new ArrayDeque<>();
+    private long pendingAudioSamples;
     private boolean closed;
 
     public AviMjpegWriter(Path file, int width, int height, int fps, boolean withAudio) throws IOException {
@@ -160,13 +163,26 @@ public final class AviMjpegWriter implements AutoCloseable {
         if (closed) return;
         writeChunk("00dc", jpeg, 0);
         videoFrames++;
+        // keep audio and video tightly interleaved in the file (players stutter when audio runs far ahead of video):
+        // write the audio that belongs to the picture just written (+100 ms)
+        flushAudio((long) videoFrames * AUDIO_RATE / fps + AUDIO_RATE / 10);
     }
 
-    /** 16-bit little-endian stereo PCM at {@link #AUDIO_RATE}. */
+    /** 16-bit little-endian stereo PCM at {@link #AUDIO_RATE}. Queued and written together with the matching video. */
     public synchronized void writeAudio(byte[] pcm) throws IOException {
         if (closed || !withAudio || pcm.length == 0) return;
-        writeChunk("01wb", pcm, 1);
-        audioSamples += pcm.length / AUDIO_BLOCK;
+        pendingAudio.add(pcm);
+        pendingAudioSamples += pcm.length / AUDIO_BLOCK;
+        if (pendingAudioSamples > AUDIO_RATE * 5L) flushAudio(Long.MAX_VALUE); // video stalled: do not pile up
+    }
+
+    private void flushAudio(long upToSamples) throws IOException {
+        while (!pendingAudio.isEmpty() && audioSamples < upToSamples) {
+            byte[] a = pendingAudio.poll();
+            writeChunk("01wb", a, 1);
+            audioSamples += a.length / AUDIO_BLOCK;
+            pendingAudioSamples -= a.length / AUDIO_BLOCK;
+        }
     }
 
     @Override
@@ -174,6 +190,7 @@ public final class AviMjpegWriter implements AutoCloseable {
         if (closed) return;
         closed = true;
         try {
+            flushAudio(Long.MAX_VALUE);
             long moviEnd = position;
 
             ByteBuffer idx = ByteBuffer.allocate(8 + 16 * index.size()).order(ByteOrder.LITTLE_ENDIAN);

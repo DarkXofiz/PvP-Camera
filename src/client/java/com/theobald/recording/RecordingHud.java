@@ -28,13 +28,13 @@ public final class RecordingHud {
 
         if (VideoRecorder.isRecording()) {
             int s = VideoRecorder.elapsedSeconds();
-            int lvl = VideoRecorder.throttleLevel();
+            int lvl = VideoRecorder.effectiveFps();
             if (s != cachedSec || lvl != cachedLevel) { // build the text once per second, not every frame
                 cachedSec = s;
                 cachedLevel = lvl;
                 cachedHud = String.format("REC %02d:%02d / %02d:%02d", s / 60, s % 60,
                         VideoRecorder.MAX_SECONDS / 60, VideoRecorder.MAX_SECONDS % 60)
-                        + (lvl > 0 ? "  FPS+ x" + (lvl + 1) : "");
+                        + (VideoRecorder.throttleLevel() > 0 ? "  FPS+ " + lvl + " fps" : "");
             }
             if ((System.currentTimeMillis() / 500) % 2 == 0) {
                 ctx.fill(6, 6, 12, 12, 0xFFFF2020);

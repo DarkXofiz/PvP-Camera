@@ -8,6 +8,8 @@ import net.minecraft.world.BlockView;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
@@ -27,15 +29,12 @@ public abstract class CameraMixin {
         this.thirdPerson = false; // Force third person to be disabled
     }
 
-    /** Own-fight mode: place the camera beside the fight without touching the player's own yaw/pitch. */
-    @Inject(method = "update", at = @At("TAIL"))
-    private void pvpcam$placeCamera(BlockView area, Entity focusedEntity, boolean thirdPerson,
-                                    boolean inverseView, float tickDelta, CallbackInfo ci) {
-        if (!FightCameraClient.active || !FightCameraClient.selfMode) return;
-        Vec3d pos = FightCameraClient.getInterpolated(tickDelta);
-        float yaw = FightCameraClient.lerpAngle(FightCameraClient.lastTargetYaw,
-                FightCameraClient.currentTargetYaw, tickDelta);
-        this.setRotation(yaw, FightCameraClient.computePitch(pos));
-        this.setPos(pos);
+    /** Follow-me mode: use the vanilla chase camera, only with our own distance behind the player. */
+    @ModifyConstant(method = "update", constant = @Constant(doubleValue = 4.0))
+    private double pvpcam$followDistance(double original) {
+        if (FightCameraClient.active && FightCameraClient.selfMode) {
+            return FightCameraClient.followDistance();
+        }
+        return original;
     }
 }

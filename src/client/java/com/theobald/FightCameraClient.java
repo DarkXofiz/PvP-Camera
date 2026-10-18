@@ -44,7 +44,7 @@ public class FightCameraClient implements ClientModInitializer {
 	public static boolean active = false;
 	public static boolean trackPearls = false;
 	public static boolean drawLines = false;
-	/** true = camera follows YOU and the nearest opponent (your own fights) */
+	/** true = camera follows YOU (chase camera). false = side camera on two named players (/fightcam players ...) */
 	public static boolean autoSelf = true;
 	/** true while the camera is currently in "own fight" mode */
 	public static boolean selfMode = false;
@@ -163,6 +163,7 @@ public class FightCameraClient implements ClientModInitializer {
 			if (active) {
 				Window window = client.getWindow();
 				aspectRatio = (float) window.getFramebufferWidth() / window.getFramebufferHeight();
+				if (selfMode) return; // follow-me mode: the camera is a chase camera, nothing to calculate
 				updateTarget(CalculateCameraPos());
 				updateYawTarget(CalculateCameraYaw());
 				updateGroundHeights();
@@ -299,12 +300,12 @@ public class FightCameraClient implements ClientModInitializer {
 		toggled = !toggled;
 		if (toggled) {
 			if (client.player != null && updatePlayers()) {
-				sendMessage("PvP Camera enabled!");
+				sendMessage(selfMode ? "PvP Camera: kamera seni takip ediyor" : "PvP Camera enabled!");
 				initTargets();
 			}
 			else if (autoSelf) {
 				active = false;
-				sendMessage("PvP Camera enabled! Rakip yaklaşınca kamera otomatik açılır.");
+				sendMessage("PvP Camera: kamera seni takip ediyor");
 			}
 			else {
 				active = false;
@@ -322,11 +323,12 @@ public class FightCameraClient implements ClientModInitializer {
 	public static void enableSelfMode() {
 		autoSelf = true;
 		lastOpponent = null;
-		sendMessage("PvP Camera: kendi dövüş modu (en yakın rakibi otomatik izler)");
+		sendMessage("PvP Camera: kamera seni takip ediyor");
 		if (!toggled) toggle();
 	}
 
 	private static void initTargets() {
+		if (selfMode) return;
 		if (players == null || players[0] == null || players[1] == null) return;
 		Vec3d start = Util.Average(players[0].getPos(), players[1].getPos());
 		Vec3d dir = players[0].getPos().subtract(players[1].getPos()).normalize();
@@ -482,40 +484,15 @@ public class FightCameraClient implements ClientModInitializer {
 		return true;
 	}
 
-	/** Own-fight mode: you + the nearest opponent. Camera switches off when nobody is close. */
+	/** Follow-me mode: the camera follows YOU (chase camera behind you). No opponent needed. */
 	private static boolean updateSelfPlayers(MinecraftClient mc) {
-		ClientPlayerEntity me = mc.player;
-		PlayerEntity opp = lastOpponent;
-
-		if (opp != null && (opp.isRemoved() || !opp.isAlive() || opp.isSpectator()
-				|| opp.squaredDistanceTo(me) > RELEASE_RANGE * RELEASE_RANGE)) {
-			opp = null;
-		}
-
-		if (opp == null) {
-			double best = ENGAGE_RANGE * ENGAGE_RANGE;
-			for (PlayerEntity p : mc.world.getPlayers()) {
-				if (p == me || p.isSpectator() || !p.isAlive()) continue;
-				double d = p.squaredDistanceTo(me);
-				if (d < best) {
-					best = d;
-					opp = p;
-				}
-			}
-		}
-
-		if (opp != lastOpponent) {
-			lastOpponent = opp;
-			if (opp != null) {
-				me.sendMessage(Text.literal("PvP Camera: " + opp.getName().getString()), true);
-			}
-		}
-
-		if (opp == null) return false;
-
 		selfMode = true;
-		FightCameraClient.setPlayers(new PlayerEntity[]{me, opp});
 		return true;
+	}
+
+	/** Camera distance behind you in follow-me mode (/fightcam distance <n> changes it). */
+	public static double followDistance() {
+		return distanceMode == DistanceMode.STATIC ? Math.max(1.0, distance) : 4.0;
 	}
 
 	public static void updateGroundHeights() {
